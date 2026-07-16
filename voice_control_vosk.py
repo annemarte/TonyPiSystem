@@ -100,6 +100,7 @@ command_queue = queue.Queue()
 
 dance_thread = None
 dance_stop_event = threading.Event()
+dance_lock = threading.Lock()
 
 last_command_time = time.time() - COMMAND_COOLDOWN
 
@@ -143,25 +144,40 @@ def stop_current_action(go_to_stand=True):
 # ============================================================
 
 def dance_loop():
-    """Run random dance actions until dance_stop_event is set."""
     print("Dance loop started")
 
     try:
         while not dance_stop_event.is_set():
-            action = random.choice(DANCE_ACTIONS)
-            print(f"DANCE ACTION: {action}")
+            action = random.choice(
+                ["dance1", "dance2", "dance3", "dance4"]
+            )
 
-            # Blocking inside the dance thread is intentional.
-            # stopActionGroup() can interrupt the current action.
-            AGC.runActionGroup(action, 1, True)
-
-            if dance_stop_event.wait(0.05):
+            # Check again immediately before starting an action.
+            if dance_stop_event.is_set():
                 break
+
+            print("DANCE ACTION:", action)
+
+            with dance_lock:
+                if dance_stop_event.is_set():
+                    break
+
+                # Run non-blocking so stopActionGroup can interrupt it.
+                AGC.runActionGroup(action, 1, False)
+
+            # Poll frequently while the action is running.
+            for _ in range(100):
+                if dance_stop_event.wait(0.05):
+                    break
+
+            if dance_stop_event.is_set():
+                break
+
     except Exception as error:
-        print(f"Dance loop error: {error}")
+        print("Dance loop error:", error)
+
     finally:
         print("Dance loop stopped")
-
 
 def start_dancing():
     global dance_thread
@@ -294,7 +310,33 @@ def audio_callback(indata, frames, time_info, status):
     except Exception as error:
         print(f"Audio callback error: {error}")
 
+def stop_current_action(go_to_stand=True):
+    global dance_thread
 
+    print("STOP EVENT SET")
+
+    # Prevent the dance loop from starting another action.
+    dance_stop_event.set()
+
+    try:
+        AGC.stopActionGroup()
+        print("stopActionGroup called")
+    except Exception as error:
+        print("Could not stop action group:", error)
+
+    # Give the dance worker a moment to exit.
+    if (
+            dance_thread is not None
+            and dance_thread.is_alive()
+            and threading.current_thread() is not dance_thread
+    ):
+        dance_thread.join(timeout=1.0)
+
+    if go_to_stand:
+        try:
+            AGC.runActionGroup("stand", 1, False)
+        except Exception as error:
+            print("Could not run stand:", error)
 # ============================================================
 # Main
 # ============================================================
