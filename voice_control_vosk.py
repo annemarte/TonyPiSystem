@@ -240,7 +240,7 @@ def execute_command(text):
         stop_current_action(go_to_stand=False)
 
     if "forward" in text or "frem" in text:
-        AGC.runActionGroup("go_forward", 2, True)
+        AGC.runActionGroup("go_forward", 2, False)
 
     elif (
             "backward" in text
@@ -248,13 +248,13 @@ def execute_command(text):
             or "tilbake" in text
             or "bak" in text
     ):
-        AGC.runActionGroup("back", 2, True)
+        AGC.runActionGroup("back", 2, False)
 
     elif "left" in text or "venstre" in text:
-        AGC.runActionGroup("turn_left", 2, True)
+        AGC.runActionGroup("turn_left", 2, False)
 
     elif "right" in text or "høyre" in text:
-        AGC.runActionGroup("turn_right", 2, True)
+        AGC.runActionGroup("turn_right", 2, False)
 
     else:
         print(f"No command mapping for: {text}")
