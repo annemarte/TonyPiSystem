@@ -58,24 +58,21 @@ AGC.runActionGroup("stand")
 # Microphone and Vosk initialization
 # ============================================================
 def find_microphone():
-    for index, device in enumerate(sd.query_devices()):
-        name = device["name"].lower()
+    default_input = sd.default.device[0]
 
-        if (
-                device["max_input_channels"] > 0
-                and "usb" in name
-                and "audio" in name
-        ):
-            print(f"Using microphone {index}: {device['name']}")
+    if default_input is not None and default_input >= 0:
+        device = sd.query_devices(default_input, "input")
+        return default_input, device
+
+    for index, device in enumerate(sd.query_devices()):
+        if device["max_input_channels"] > 0:
             return index, device
 
-    raise RuntimeError(
-        "Could not find a USB audio input device. "
-        f"Available devices: {sd.query_devices()}"
-    )
+    raise RuntimeError("No input device found")
 
 
-mic_device, mic_info = find_microphone()
+mic_device = 2
+mic_info = sd.query_devices(mic_device, "input")
 sample_rate = int(mic_info["default_samplerate"])
 
 print(f"Microphone index: {mic_device}")
@@ -126,21 +123,20 @@ def play_ready_sound():
 
 
 def stop_current_action(go_to_stand=True):
-    """Stop dancing or any currently executing action group."""
-    dance_stop_event.set()
+    global dance_thread
 
-    try:
-        AGC.stopActionGroup()
-    except Exception as error:
-        print(f"Could not stop action group cleanly: {error}")
+    dance_stop_event.set()
+    AGC.stopActionGroup()
+
+    if (
+            dance_thread is not None
+            and dance_thread.is_alive()
+            and threading.current_thread() is not dance_thread
+    ):
+        dance_thread.join(timeout=2.0)
 
     if go_to_stand:
-        try:
-            AGC.runActionGroup("stand")
-        except Exception as error:
-            print(f"Could not enter stand position: {error}")
-
-
+        AGC.runActionGroup("stand")
 # ============================================================
 # Dance handling
 # ============================================================
@@ -213,7 +209,7 @@ def execute_command(text):
     print("CMD:", text)
 
     # Stop always has the highest priority and bypasses cooldown.
-    if "stop" in text or "stopp" in text:
+    if "stop" in text or "stopp" in text or "no" in text:
         print("Stopping immediately")
         stop_current_action(go_to_stand=True)
         last_command_time = time.time()
@@ -312,33 +308,7 @@ def audio_callback(indata, frames, time_info, status):
     except Exception as error:
         print(f"Audio callback error: {error}")
 
-def stop_current_action(go_to_stand=True):
-    global dance_thread
 
-    print("STOP EVENT SET")
-
-    # Prevent the dance loop from starting another action.
-    dance_stop_event.set()
-
-    try:
-        AGC.stopActionGroup()
-        print("stopActionGroup called")
-    except Exception as error:
-        print("Could not stop action group:", error)
-
-    # Give the dance worker a moment to exit.
-    if (
-            dance_thread is not None
-            and dance_thread.is_alive()
-            and threading.current_thread() is not dance_thread
-    ):
-        dance_thread.join(timeout=1.0)
-
-    if go_to_stand:
-        try:
-            AGC.runActionGroup("stand", 1, False)
-        except Exception as error:
-            print("Could not run stand:", error)
 # ============================================================
 # Main
 # ============================================================
