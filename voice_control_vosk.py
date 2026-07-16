@@ -145,30 +145,25 @@ def dance_loop():
     print("Dance loop started")
 
     try:
-        while not dance_stop_event.is_set():
-            action = random.choice(
-                ["dance1", "dance2", "dance3", "dance4"]
-            )
+        if dance_stop_event.is_set():
+            return
 
-            # Check again immediately before starting an action.
+        action = random.choice(
+            ["dance1", "dance2", "dance3", "dance4"]
+        )
+
+        print("DANCE ACTION:", action)
+
+        with dance_lock:
             if dance_stop_event.is_set():
-                break
+                return
 
-            print("DANCE ACTION:", action)
+            # Run one dance action only.
+            AGC.runActionGroup(action, 1, False)
 
-            with dance_lock:
-                if dance_stop_event.is_set():
-                    break
-
-                # Run non-blocking so stopActionGroup can interrupt it.
-                AGC.runActionGroup(action, 1, False)
-
-            # Poll frequently while the action is running.
-            for _ in range(100):
-                if dance_stop_event.wait(0.05):
-                    break
-
-            if dance_stop_event.is_set():
+        # Poll while the action is running, then exit.
+        for _ in range(100):
+            if dance_stop_event.wait(0.05):
                 break
 
     except Exception as error:
@@ -209,7 +204,7 @@ def execute_command(text):
     print("CMD:", text)
 
     # Stop always has the highest priority and bypasses cooldown.
-    if "stop" in text or "stopp" in text or "no" in text:
+    if "stop" in text or "stopp" in text or "no" in text or "nei" in text:
         print("Stopping immediately")
         stop_current_action(go_to_stand=True)
         last_command_time = time.time()
