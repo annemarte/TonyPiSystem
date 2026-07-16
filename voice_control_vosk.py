@@ -57,19 +57,21 @@ AGC.runActionGroup("stand")
 # ============================================================
 # Microphone and Vosk initialization
 # ============================================================
-
 def find_microphone():
-    """Find the EchoPro USB microphone by name."""
     for index, device in enumerate(sd.query_devices()):
+        name = device["name"].lower()
+
         if (
-                MICROPHONE_NAME.lower() in device["name"].lower()
-                and device["max_input_channels"] > 0
+                device["max_input_channels"] > 0
+                and "usb" in name
+                and "audio" in name
         ):
+            print(f"Using microphone {index}: {device['name']}")
             return index, device
 
     raise RuntimeError(
-        f"Could not find an input device containing "
-        f"'{MICROPHONE_NAME}'."
+        "Could not find a USB audio input device. "
+        f"Available devices: {sd.query_devices()}"
     )
 
 
