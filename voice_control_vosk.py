@@ -209,7 +209,7 @@ def execute_command(text):
 
     last_command_time = now
 
-    if "dance" in text or "dans" in text:
+    if "dance" in text or "dans" in text or "yo" in text:
         start_dancing()
         return
 
