@@ -1,7 +1,11 @@
+import os
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 import threading
 import queue
 import random
-import os
 import time
 import numpy as np
 import sounddevice as sd
@@ -16,6 +20,7 @@ import hiwonder.yaml_handle as yaml_handle
 # Robot init
 # ======================
 board = rrc.Board()
+
 ctl = Controller(board)
 
 servo_data = yaml_handle.get_yaml_data(yaml_handle.servo_file_path)
@@ -27,18 +32,30 @@ AGC.runActionGroup("stand")
 # Whisper init (Norwegian)
 # ======================
 print("Loading Whisper model...")
-model = whisper.load_model("small")  # or "base"
+model = whisper.load_model("tiny")  # or "small", "base"
 
-SAMPLE_RATE = 16000
-audio_queue = queue.Queue()
+# Device 1 was "pulse".0 is echo pro. 1 is set to echo pro as source
+MIC_DEVICE = 1
+mic_info = sd.query_devices(MIC_DEVICE, "input")
+MIC_SAMPLE_RATE = int(mic_info["default_samplerate"])
+MIC_GAIN = 1.0
+
+print("Using microphone:", mic_info["name"])
+print("Microphone rate:", MIC_SAMPLE_RATE)
+
+# CHANGED: bounded queue prevents unlimited latency and memory growth.
+audio_queue = queue.Queue(maxsize=2)
+
 
 # ======================
 # State
 # ======================
 dance_active = False
 dance_thread = None
-last_cmd_time = time.time()
+
 CMD_COOLDOWN = 1.5
+last_cmd_time = time.time() - CMD_COOLDOWN
+last_level_print_time = 0.0
 
 # ======================
 # Audio feedback
@@ -50,17 +67,14 @@ def play_ready_sound():
     )
 
 # ======================
-# Dance loop (interruptible)
+# Dance action (single random dance)
 # ======================
-def dance_loop():
-    global dance_active
-    while dance_active:
-        AGC.runActionGroup(
-            random.choice(["dance1", "dance2", "dance3", "dance4"]),
-            1,
-            False
-        )
-        time.sleep(0.05)
+def run_random_dance_once():
+    AGC.runActionGroup(
+        random.choice(["dance1", "dance2", "dance3", "dance4"]),
+        1,
+        False
+    )
 
 # ======================
 # Command execution
@@ -86,15 +100,10 @@ def execute_command(text):
         return
     last_cmd_time = now
 
-    if "dans" in text or "dance" in text or "God dag" in text:
-        if not dance_active:
-            print("Starting dance loop")
-            dance_active = True
-            dance_thread = threading.Thread(
-                target=dance_loop,
-                daemon=True
-            )
-            dance_thread.start()
+    if "dans" in text or "dance" in text or "god dag" in text:
+        print("Starting one random dance")
+        dance_active = False
+        run_random_dance_once()
 
     elif "frem" in text or "forward" in text:
         dance_active = False
@@ -126,7 +135,8 @@ def whisper_worker():
         buffer = np.concatenate([buffer, audio])
 
         # Process ~2 seconds of audio
-        if len(buffer) >= SAMPLE_RATE * 2:
+        if len(buffer) >= MIC_SAMPLE_RATE * 2:
+            print("ASR: transcribing audio chunk...")
             result = model.transcribe(
                 buffer,
                 language="no",
@@ -145,7 +155,43 @@ def whisper_worker():
 # Audio callback
 # ======================
 def audio_callback(indata, frames, time_info, status):
-    audio_queue.put(indata.copy().flatten())
+    global last_level_print_time
+
+    if status:
+        print("AUDIO STATUS:", status)
+
+    audio = indata.copy().flatten()
+
+    # NEW: measure incoming signal level.
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+
+    # print the level at most twice per second.
+    #now = time.time()
+    #if now - last_level_print_time >= 0.5:
+    #    print(f"MIC LEVEL: {rms:.5f}")
+    #    last_level_print_time = now
+
+    # NEW: software amplification for the weak microphone.
+    audio = np.clip(audio * MIC_GAIN, -1.0, 1.0)
+
+    # CHANGED: do not block the real-time audio callback.
+    try:
+        audio_queue.put_nowait(audio)
+
+    except queue.Full:
+        # Whisper is slower than incoming audio.
+        # Drop the oldest block to avoid growing latency.
+        try:
+            audio_queue.get_nowait()
+            audio_queue.task_done()
+        except queue.Empty:
+            pass
+
+        try:
+            audio_queue.put_nowait(audio)
+        except queue.Full:
+            pass
+
 
 # ======================
 # Start threads
@@ -155,13 +201,22 @@ threading.Thread(
     daemon=True
 ).start()
 
+print("Available audio devices:")
+print(sd.query_devices())
+
+# NEW: verify that the selected device is a valid input.
+mic_info = sd.query_devices(MIC_DEVICE, "input")
+print("Using microphone:", mic_info["name"])
+
 print("Opening microphone...")
 
 with sd.InputStream(
-    samplerate=SAMPLE_RATE,
-    channels=1,
-    dtype="float32",
-    callback=audio_callback
+        device=MIC_DEVICE,
+        samplerate=MIC_SAMPLE_RATE,
+        channels=1,
+        dtype="float32",
+        blocksize=4000,
+        callback=audio_callback,
 ):
     while True:
         time.sleep(0.1)
