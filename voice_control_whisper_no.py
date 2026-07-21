@@ -49,23 +49,25 @@ VAD_MIN_RMS = 0.035
 ASR_TARGET_PEAK = 0.8
 ASR_MAX_CHUNK_GAIN = 8.0
 ASR_NO_SPEECH_PROB_MAX = 0.6
-ASR_MIN_ALPHA_CHARS = 2
+ASR_MIN_ALPHA_CHARS = 3
 ASR_HALLUCINATION_PHRASES = (
     "thank you", "thanks for watching", "subscribe", "bye", "bye bye",
-    "you", "the", "okay", "so",
+    "you", "the", "okay", "so", "oh", "ah", "uh", "um", "hmm", "mm",
 )
 
 # NEW: background-noise handling.
 NOISE_CALIBRATION_SECONDS = 2.0
-NOISE_RMS_MARGIN = 2.5   # required speech rms multiple over measured noise floor
-NOISE_ACTIVE_MARGIN = 1.5
+NOISE_RMS_MARGIN = 1.5   # required speech rms multiple over measured noise floor
+NOISE_ACTIVE_MARGIN = 1.2
+NOISE_MAX_RMS_FLOOR = 0.15       # cap so a noisy calibration can't make VAD unreachable
+NOISE_MAX_ACTIVE_RATIO_FLOOR = 0.5
 HIGHPASS_ALPHA = 0.98    # simple 1-pole high-pass to cut low-frequency rumble/hum
 
 print("Using microphone:", mic_info["name"])
 print("Microphone rate:", MIC_SAMPLE_RATE)
 
 # CHANGED: bounded queue prevents unlimited latency and memory growth.
-audio_queue = queue.Queue(maxsize=2)
+audio_queue = queue.Queue(maxsize=10)
 
 
 # ======================
@@ -167,8 +169,19 @@ def whisper_worker():
         noise_audio = np.concatenate(noise_samples)
         noise_rms = float(np.sqrt(np.mean(noise_audio ** 2)))
         noise_active_ratio = float(np.mean(np.abs(noise_audio) >= VAD_ACTIVITY_LEVEL))
-        vad_min_rms = max(VAD_MIN_RMS, noise_rms * NOISE_RMS_MARGIN)
-        vad_min_active_ratio = max(VAD_MIN_ACTIVE_RATIO, noise_active_ratio * NOISE_ACTIVE_MARGIN)
+
+        # Clamp the calibrated thresholds so an unexpectedly loud/noisy
+        # calibration window (e.g. echo/feedback, brief bump) can never
+        # push the VAD thresholds above real-speech levels, which would
+        # make speech unreachable (e.g. active_ratio > 100%).
+        vad_min_rms = min(
+            NOISE_MAX_RMS_FLOOR,
+            max(VAD_MIN_RMS, noise_rms * NOISE_RMS_MARGIN),
+        )
+        vad_min_active_ratio = min(
+            NOISE_MAX_ACTIVE_RATIO_FLOOR,
+            max(VAD_MIN_ACTIVE_RATIO, noise_active_ratio * NOISE_ACTIVE_MARGIN),
+        )
         print(
             "ASR: noise floor "
             f"(rms={noise_rms:.4f}, active={noise_active_ratio:.2%}) -> "
