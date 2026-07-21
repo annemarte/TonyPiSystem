@@ -55,6 +55,12 @@ ASR_HALLUCINATION_PHRASES = (
     "you", "the", "okay", "so",
 )
 
+# NEW: background-noise handling.
+NOISE_CALIBRATION_SECONDS = 2.0
+NOISE_RMS_MARGIN = 2.5   # required speech rms multiple over measured noise floor
+NOISE_ACTIVE_MARGIN = 1.5
+HIGHPASS_ALPHA = 0.98    # simple 1-pole high-pass to cut low-frequency rumble/hum
+
 print("Using microphone:", mic_info["name"])
 print("Microphone rate:", MIC_SAMPLE_RATE)
 
@@ -143,6 +149,33 @@ def whisper_worker():
     print("Whisper ASR ready (Norwegian)")
     play_ready_sound()
 
+    # NEW: calibrate ambient background noise so VAD thresholds adapt
+    # to the current room instead of using fixed values.
+    vad_min_rms = VAD_MIN_RMS
+    vad_min_active_ratio = VAD_MIN_ACTIVE_RATIO
+
+    print(f"ASR: calibrating background noise for {NOISE_CALIBRATION_SECONDS:.1f}s...")
+    noise_samples = []
+    calib_deadline = time.time() + NOISE_CALIBRATION_SECONDS
+    while time.time() < calib_deadline:
+        try:
+            noise_samples.append(audio_queue.get(timeout=0.5))
+        except queue.Empty:
+            continue
+
+    if noise_samples:
+        noise_audio = np.concatenate(noise_samples)
+        noise_rms = float(np.sqrt(np.mean(noise_audio ** 2)))
+        noise_active_ratio = float(np.mean(np.abs(noise_audio) >= VAD_ACTIVITY_LEVEL))
+        vad_min_rms = max(VAD_MIN_RMS, noise_rms * NOISE_RMS_MARGIN)
+        vad_min_active_ratio = max(VAD_MIN_ACTIVE_RATIO, noise_active_ratio * NOISE_ACTIVE_MARGIN)
+        print(
+            "ASR: noise floor "
+            f"(rms={noise_rms:.4f}, active={noise_active_ratio:.2%}) -> "
+            f"vad_min_rms={vad_min_rms:.4f}, vad_min_active_ratio={vad_min_active_ratio:.2%}"
+        )
+    else:
+        print("ASR: no audio captured during noise calibration, using defaults")
 
     buffer = np.zeros(0, dtype=np.float32)
     chunk_samples = int(MIC_SAMPLE_RATE * ASR_CHUNK_SECONDS)
@@ -168,7 +201,7 @@ def whisper_worker():
             peak = float(np.max(abs_chunk))
             active_ratio = float(np.mean(abs_chunk >= VAD_ACTIVITY_LEVEL))
 
-            if rms < VAD_MIN_RMS or active_ratio < VAD_MIN_ACTIVE_RATIO:
+            if rms < vad_min_rms or active_ratio < vad_min_active_ratio:
                 print(
                     "ASR: skipping low-voice chunk "
                     f"(rms={rms:.4f}, active={active_ratio:.2%}, peak={peak:.4f})"
@@ -242,13 +275,32 @@ def whisper_worker():
 # ======================
 # Audio callback
 # ======================
+_hp_prev_in = 0.0
+_hp_prev_out = 0.0
+
+
 def audio_callback(indata, frames, time_info, status):
-    global last_level_print_time
+    global last_level_print_time, _hp_prev_in, _hp_prev_out
 
     if status:
         print("AUDIO STATUS:", status)
 
     audio = indata.copy().flatten()
+
+    # NEW: simple 1-pole high-pass filter to cut low-frequency background
+    # rumble/hum (e.g. fans, AC) before amplification, carrying filter
+    # state across callback blocks.
+    filtered = np.empty_like(audio)
+    prev_in = _hp_prev_in
+    prev_out = _hp_prev_out
+    for i, sample in enumerate(audio):
+        out = HIGHPASS_ALPHA * (prev_out + sample - prev_in)
+        filtered[i] = out
+        prev_in = sample
+        prev_out = out
+    _hp_prev_in = prev_in
+    _hp_prev_out = prev_out
+    audio = filtered
 
     # NEW: measure incoming signal level.
     rms = float(np.sqrt(np.mean(audio ** 2)))
