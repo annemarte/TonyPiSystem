@@ -36,9 +36,37 @@ print("Loading Whisper model...")
 model = whisper.load_model("tiny")  # or "small", "base"
 
 # Device 1 was "pulse".0 is echo pro. 1 is set to echo pro as source
-MIC_DEVICE = 1
+# NEW: auto-detect the ReSpeaker/Echo Pro input device by name instead of
+# relying on a hardcoded index, since device indices can shift depending
+# on what is plugged in / what pulse sees. Falls back to MIC_DEVICE_FALLBACK
+# if no matching device name is found.
+MIC_DEVICE_NAME_HINTS = ("echo", "respeaker", "seeed")
+MIC_DEVICE_FALLBACK = 1
+
+
+def _find_mic_device():
+    devices = sd.query_devices()
+    for idx, dev in enumerate(devices):
+        if dev.get("max_input_channels", 0) <= 0:
+            continue
+        name = dev.get("name", "").lower()
+        if any(hint in name for hint in MIC_DEVICE_NAME_HINTS):
+            return idx
+    return MIC_DEVICE_FALLBACK
+
+
+MIC_DEVICE = _find_mic_device()
 mic_info = sd.query_devices(MIC_DEVICE, "input")
 MIC_SAMPLE_RATE = int(mic_info["default_samplerate"])
+print(f"Auto-selected mic device #{MIC_DEVICE}: {mic_info['name']!r} "
+      f"({mic_info['max_input_channels']} input channels, "
+      f"{MIC_SAMPLE_RATE} Hz)")
+# NEW: Echo Pro / ReSpeaker devices often expose multiple mic channels
+# (e.g. 4-6 channels for beamforming/raw mics). We open the stream with
+# all of its input channels and mix them down to mono in the callback,
+# instead of hardcoding channels=1 (which can fail to open or silently
+# grab the wrong channel on multi-mic arrays).
+MIC_CHANNELS = max(1, int(mic_info["max_input_channels"]))
 MIC_GAIN = 1.0
 ASR_CHUNK_SECONDS = 3.0
 ASR_MAX_BUFFER_SECONDS = 6.0
@@ -330,7 +358,14 @@ def audio_callback(indata, frames, time_info, status):
     if status:
         print("AUDIO STATUS:", status)
 
-    audio = indata.copy().flatten()
+    audio = indata.copy()
+    # NEW: mix multi-channel Echo Pro / ReSpeaker input down to mono by
+    # averaging channels, instead of assuming a single-channel stream
+    # (which may fail to open, or silently pick channel 0 only).
+    if audio.ndim > 1 and audio.shape[1] > 1:
+        audio = audio.mean(axis=1)
+    else:
+        audio = audio.flatten()
 
     # NEW: simple 1-pole high-pass filter to cut low-frequency background
     # rumble/hum (e.g. fans, AC) before amplification, carrying filter
@@ -398,7 +433,7 @@ print("Opening microphone...")
 with sd.InputStream(
         device=MIC_DEVICE,
         samplerate=MIC_SAMPLE_RATE,
-        channels=1,
+        channels=MIC_CHANNELS,
         dtype="float32",
         blocksize=4000,
         callback=audio_callback,
