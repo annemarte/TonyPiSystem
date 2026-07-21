@@ -45,9 +45,11 @@ ASR_MAX_BUFFER_SECONDS = 6.0
 WHISPER_LANGUAGE = None  # set to "no" to force Norwegian
 VAD_ACTIVITY_LEVEL = 0.015
 VAD_MIN_ACTIVE_RATIO = 0.08
-VAD_MIN_RMS = 0.02
+VAD_MIN_RMS = 0.035
 ASR_TARGET_PEAK = 0.8
 ASR_MAX_CHUNK_GAIN = 8.0
+ASR_NO_SPEECH_PROB_MAX = 0.6
+ASR_MIN_ALPHA_CHARS = 2
 
 print("Using microphone:", mic_info["name"])
 print("Microphone rate:", MIC_SAMPLE_RATE)
@@ -137,10 +139,6 @@ def whisper_worker():
     print("Whisper ASR ready (Norwegian)")
     play_ready_sound()
 
-    # Guard against missing global tuning constants in older deployed copies.
-    vad_activity_level = float(globals().get("VAD_ACTIVITY_LEVEL", 0.015))
-    vad_min_active_ratio = float(globals().get("VAD_MIN_ACTIVE_RATIO", 0.08))
-    vad_min_rms = float(globals().get("VAD_MIN_RMS", 0.02))
 
     buffer = np.zeros(0, dtype=np.float32)
     chunk_samples = int(MIC_SAMPLE_RATE * ASR_CHUNK_SECONDS)
@@ -164,9 +162,9 @@ def whisper_worker():
             abs_chunk = np.abs(chunk)
             rms = float(np.sqrt(np.mean(chunk ** 2)))
             peak = float(np.max(abs_chunk))
-            active_ratio = float(np.mean(abs_chunk >= vad_activity_level))
+            active_ratio = float(np.mean(abs_chunk >= VAD_ACTIVITY_LEVEL))
 
-            if rms < vad_min_rms or active_ratio < vad_min_active_ratio:
+            if rms < VAD_MIN_RMS or active_ratio < VAD_MIN_ACTIVE_RATIO:
                 print(
                     "ASR: skipping low-voice chunk "
                     f"(rms={rms:.4f}, active={active_ratio:.2%}, peak={peak:.4f})"
@@ -199,11 +197,35 @@ def whisper_worker():
                 raw_text = result.get("text", "")
                 text = raw_text.strip()
                 elapsed = time.time() - started
-                print(f"ASR: done in {elapsed:.2f}s, raw={raw_text!r}")
 
-                if text:
-                    print("TEXT:", text)
-                    execute_command(text)
+                segments = result.get("segments") or []
+                if segments:
+                    avg_no_speech_prob = float(
+                        np.mean([seg.get("no_speech_prob", 0.0) for seg in segments])
+                    )
+                else:
+                    avg_no_speech_prob = 0.0
+
+                alpha_chars = sum(ch.isalpha() for ch in text)
+
+                print(
+                    f"ASR: done in {elapsed:.2f}s, raw={raw_text!r}, "
+                    f"no_speech_prob={avg_no_speech_prob:.2f}, alpha_chars={alpha_chars}"
+                )
+
+                if not text:
+                    continue
+
+                if avg_no_speech_prob > ASR_NO_SPEECH_PROB_MAX:
+                    print("ASR: ignoring likely silence/hallucination (high no_speech_prob)")
+                    continue
+
+                if alpha_chars < ASR_MIN_ALPHA_CHARS:
+                    print("ASR: ignoring non-speech/punctuation-only transcription")
+                    continue
+
+                print("TEXT:", text)
+                execute_command(text)
             except Exception as exc:
                 print("ASR ERROR:", repr(exc))
                 traceback.print_exc()
