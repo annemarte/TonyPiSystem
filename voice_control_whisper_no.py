@@ -61,6 +61,14 @@ NOISE_RMS_MARGIN = 1.5   # required speech rms multiple over measured noise floo
 NOISE_ACTIVE_MARGIN = 1.2
 NOISE_MAX_RMS_FLOOR = 0.15       # cap so a noisy calibration can't make VAD unreachable
 NOISE_MAX_ACTIVE_RATIO_FLOOR = 0.5
+# Absolute lower bounds. NOTE: these must be much smaller than VAD_MIN_RMS /
+# VAD_MIN_ACTIVE_RATIO so that a genuinely quiet room can lower the
+# calibrated thresholds below the static defaults. If the calibrated
+# threshold were clamped to the static VAD_MIN_RMS/VAD_MIN_ACTIVE_RATIO as a
+# lower bound, calibration would be a no-op whenever the room is quieter
+# than those defaults (which is exactly the common case).
+NOISE_MIN_RMS_FLOOR = 0.008
+NOISE_MIN_ACTIVE_RATIO_FLOOR = 0.02
 HIGHPASS_ALPHA = 0.98    # simple 1-pole high-pass to cut low-frequency rumble/hum
 
 print("Using microphone:", mic_info["name"])
@@ -178,6 +186,12 @@ def whisper_worker():
         except queue.Empty:
             continue
 
+    total_calib_samples = sum(len(s) for s in noise_samples)
+    print(
+        f"ASR: calibration captured {len(noise_samples)} blocks "
+        f"({total_calib_samples / MIC_SAMPLE_RATE:.2f}s of audio)"
+    )
+
     if noise_samples:
         noise_audio = np.concatenate(noise_samples)
         noise_rms = float(np.sqrt(np.mean(noise_audio ** 2)))
@@ -186,14 +200,19 @@ def whisper_worker():
         # Clamp the calibrated thresholds so an unexpectedly loud/noisy
         # calibration window (e.g. echo/feedback, brief bump) can never
         # push the VAD thresholds above real-speech levels, which would
-        # make speech unreachable (e.g. active_ratio > 100%).
+        # make speech unreachable (e.g. active_ratio > 100%). NOTE: the
+        # lower bound is a small absolute floor (NOISE_MIN_RMS_FLOOR /
+        # NOISE_MIN_ACTIVE_RATIO_FLOOR), NOT the static VAD_MIN_RMS /
+        # VAD_MIN_ACTIVE_RATIO defaults -- otherwise calibration would be a
+        # no-op in quiet rooms (the common case), which is what made it
+        # look like calibration "wasn't working".
         vad_min_rms = min(
             NOISE_MAX_RMS_FLOOR,
-            max(VAD_MIN_RMS, noise_rms * NOISE_RMS_MARGIN),
+            max(NOISE_MIN_RMS_FLOOR, noise_rms * NOISE_RMS_MARGIN),
         )
         vad_min_active_ratio = min(
             NOISE_MAX_ACTIVE_RATIO_FLOOR,
-            max(VAD_MIN_ACTIVE_RATIO, noise_active_ratio * NOISE_ACTIVE_MARGIN),
+            max(NOISE_MIN_ACTIVE_RATIO_FLOOR, noise_active_ratio * NOISE_ACTIVE_MARGIN),
         )
         print(
             "ASR: noise floor "
