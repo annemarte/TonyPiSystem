@@ -50,6 +50,10 @@ ASR_TARGET_PEAK = 0.8
 ASR_MAX_CHUNK_GAIN = 8.0
 ASR_NO_SPEECH_PROB_MAX = 0.6
 ASR_MIN_ALPHA_CHARS = 2
+ASR_HALLUCINATION_PHRASES = (
+    "thank you", "thanks for watching", "subscribe", "bye", "bye bye",
+    "you", "the", "okay", "so",
+)
 
 print("Using microphone:", mic_info["name"])
 print("Microphone rate:", MIC_SAMPLE_RATE)
@@ -188,7 +192,7 @@ def whisper_worker():
                     "fp16": False,
                     "temperature": 0,
                     "condition_on_previous_text": False,
-                    "no_speech_threshold": 0.9,
+                    "no_speech_threshold": 0.6,
                 }
                 if WHISPER_LANGUAGE:
                     transcribe_kwargs["language"] = WHISPER_LANGUAGE
@@ -216,12 +220,17 @@ def whisper_worker():
                 if not text:
                     continue
 
-                if avg_no_speech_prob > ASR_NO_SPEECH_PROB_MAX:
-                    print("ASR: ignoring likely silence/hallucination (high no_speech_prob)")
-                    continue
-
                 if alpha_chars < ASR_MIN_ALPHA_CHARS:
                     print("ASR: ignoring non-speech/punctuation-only transcription")
+                    continue
+
+                normalized_text = text.strip(" .,!?").lower()
+                if normalized_text in ASR_HALLUCINATION_PHRASES:
+                    print("ASR: ignoring known hallucination phrase", repr(text))
+                    continue
+
+                if avg_no_speech_prob > ASR_NO_SPEECH_PROB_MAX and active_ratio < VAD_MIN_ACTIVE_RATIO * 2:
+                    print("ASR: ignoring likely silence/hallucination (high no_speech_prob)")
                     continue
 
                 print("TEXT:", text)
