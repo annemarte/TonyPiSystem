@@ -84,9 +84,13 @@ last_level_print_time = 0.0
 # Audio feedback
 # ======================
 def play_ready_sound():
+    # NOTE: run aplay synchronously (no trailing "&") so we can wait for
+    # playback to finish before the mic starts being used for ASR. This
+    # prevents the ready sound itself (picked up by the mic through
+    # speaker bleed) from being transcribed as a voice command.
     os.system(
         "aplay /home/pi/TonyPi/Functions/voice_interaction/audio/ready.wav "
-        ">/dev/null 2>&1 &"
+        ">/dev/null 2>&1"
     )
 
 # ======================
@@ -150,6 +154,15 @@ def execute_command(text):
 def whisper_worker():
     print("Whisper ASR ready (Norwegian)")
     play_ready_sound()
+
+    # Drain any audio captured while the ready sound was playing (or
+    # briefly queued right before/after it) so its own sound is never
+    # fed into calibration or transcription.
+    while True:
+        try:
+            audio_queue.get_nowait()
+        except queue.Empty:
+            break
 
     # NEW: calibrate ambient background noise so VAD thresholds adapt
     # to the current room instead of using fixed values.
