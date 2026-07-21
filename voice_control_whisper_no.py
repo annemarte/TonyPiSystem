@@ -84,7 +84,7 @@ ASR_HALLUCINATION_PHRASES = (
 )
 
 # NEW: background-noise handling.
-NOISE_CALIBRATION_SECONDS = 2.0
+NOISE_CALIBRATION_SECONDS = 5.0
 NOISE_RMS_MARGIN = 1.5   # required speech rms multiple over measured noise floor
 NOISE_ACTIVE_MARGIN = 1.2
 NOISE_MAX_RMS_FLOOR = 0.15       # cap so a noisy calibration can't make VAD unreachable
