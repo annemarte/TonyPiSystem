@@ -7,6 +7,7 @@ import threading
 import queue
 import random
 import time
+import traceback
 import numpy as np
 import sounddevice as sd
 import whisper
@@ -39,6 +40,14 @@ MIC_DEVICE = 1
 mic_info = sd.query_devices(MIC_DEVICE, "input")
 MIC_SAMPLE_RATE = int(mic_info["default_samplerate"])
 MIC_GAIN = 1.0
+ASR_CHUNK_SECONDS = 3.0
+ASR_MAX_BUFFER_SECONDS = 6.0
+WHISPER_LANGUAGE = None  # set to "no" to force Norwegian
+VAD_ACTIVITY_LEVEL = 0.015
+VAD_MIN_ACTIVE_RATIO = 0.08
+VAD_MIN_RMS = 0.02
+ASR_TARGET_PEAK = 0.8
+ASR_MAX_CHUNK_GAIN = 8.0
 
 print("Using microphone:", mic_info["name"])
 print("Microphone rate:", MIC_SAMPLE_RATE)
@@ -129,27 +138,70 @@ def whisper_worker():
     play_ready_sound()
 
     buffer = np.zeros(0, dtype=np.float32)
+    chunk_samples = int(MIC_SAMPLE_RATE * ASR_CHUNK_SECONDS)
+    max_buffer_samples = int(MIC_SAMPLE_RATE * ASR_MAX_BUFFER_SECONDS)
 
     while True:
-        audio = audio_queue.get()
+        try:
+            audio = audio_queue.get(timeout=1.0)
+        except queue.Empty:
+            continue
+
         buffer = np.concatenate([buffer, audio])
 
-        # Process ~2 seconds of audio
-        if len(buffer) >= MIC_SAMPLE_RATE * 2:
-            print("ASR: transcribing audio chunk...")
-            result = model.transcribe(
-                buffer,
-                language="no",
-                fp16=False,
-                temperature=0
+        if len(buffer) > max_buffer_samples:
+            buffer = buffer[-max_buffer_samples:]
+
+        while len(buffer) >= chunk_samples:
+            chunk = buffer[:chunk_samples]
+            buffer = buffer[chunk_samples:]
+
+            abs_chunk = np.abs(chunk)
+            rms = float(np.sqrt(np.mean(chunk ** 2)))
+            peak = float(np.max(abs_chunk))
+            active_ratio = float(np.mean(abs_chunk >= VAD_ACTIVITY_LEVEL))
+
+            if rms < VAD_MIN_RMS or active_ratio < VAD_MIN_ACTIVE_RATIO:
+                print(
+                    "ASR: skipping low-voice chunk "
+                    f"(rms={rms:.4f}, active={active_ratio:.2%}, peak={peak:.4f})"
+                )
+                continue
+
+            if peak > 1e-6:
+                chunk_gain = min(ASR_MAX_CHUNK_GAIN, ASR_TARGET_PEAK / peak)
+                chunk = np.clip(chunk * chunk_gain, -1.0, 1.0)
+            else:
+                chunk_gain = 1.0
+
+            print(
+                f"ASR: transcribing {len(chunk) / MIC_SAMPLE_RATE:.1f}s chunk "
+                f"(rms={rms:.4f}, active={active_ratio:.2%}, gain={chunk_gain:.2f})..."
             )
+            started = time.time()
 
-            text = result.get("text", "").strip()
-            if text:
-                print("TEXT:", text)
-                execute_command(text)
+            try:
+                transcribe_kwargs = {
+                    "fp16": False,
+                    "temperature": 0,
+                    "condition_on_previous_text": False,
+                    "no_speech_threshold": 0.9,
+                }
+                if WHISPER_LANGUAGE:
+                    transcribe_kwargs["language"] = WHISPER_LANGUAGE
 
-            buffer = np.zeros(0, dtype=np.float32)
+                result = model.transcribe(chunk, **transcribe_kwargs)
+                raw_text = result.get("text", "")
+                text = raw_text.strip()
+                elapsed = time.time() - started
+                print(f"ASR: done in {elapsed:.2f}s, raw={raw_text!r}")
+
+                if text:
+                    print("TEXT:", text)
+                    execute_command(text)
+            except Exception as exc:
+                print("ASR ERROR:", repr(exc))
+                traceback.print_exc()
 
 # ======================
 # Audio callback
