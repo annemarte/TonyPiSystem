@@ -137,6 +137,11 @@ def whisper_worker():
     print("Whisper ASR ready (Norwegian)")
     play_ready_sound()
 
+    # Guard against missing global tuning constants in older deployed copies.
+    vad_activity_level = float(globals().get("VAD_ACTIVITY_LEVEL", 0.015))
+    vad_min_active_ratio = float(globals().get("VAD_MIN_ACTIVE_RATIO", 0.08))
+    vad_min_rms = float(globals().get("VAD_MIN_RMS", 0.02))
+
     buffer = np.zeros(0, dtype=np.float32)
     chunk_samples = int(MIC_SAMPLE_RATE * ASR_CHUNK_SECONDS)
     max_buffer_samples = int(MIC_SAMPLE_RATE * ASR_MAX_BUFFER_SECONDS)
@@ -159,9 +164,9 @@ def whisper_worker():
             abs_chunk = np.abs(chunk)
             rms = float(np.sqrt(np.mean(chunk ** 2)))
             peak = float(np.max(abs_chunk))
-            active_ratio = float(np.mean(abs_chunk >= VAD_ACTIVITY_LEVEL))
+            active_ratio = float(np.mean(abs_chunk >= vad_activity_level))
 
-            if rms < VAD_MIN_RMS or active_ratio < VAD_MIN_ACTIVE_RATIO:
+            if rms < vad_min_rms or active_ratio < vad_min_active_ratio:
                 print(
                     "ASR: skipping low-voice chunk "
                     f"(rms={rms:.4f}, active={active_ratio:.2%}, peak={peak:.4f})"
