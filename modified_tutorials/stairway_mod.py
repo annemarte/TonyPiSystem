@@ -58,12 +58,16 @@ def initMove():
 
 object_left_x, object_right_x, object_center_y, object_angle = -2, -2, -2, 0
 strp_up = True
+# 阶梯识别/对齐/接近/锁定爬阶的小状态机(small state latch for detect/align/approach/commit-to-climb)
+stair_state = 'SEARCHING'
 # 变量重置(variable reset)
 def reset():
     global object_left_x, object_right_x
     global object_center_y, object_angle,strp_up
+    global stair_state
     
     strp_up = True
+    stair_state = 'SEARCHING'
     object_left_x, object_right_x, object_center_y, object_angle = -2, -2, -2, 0
     
 
@@ -146,17 +150,13 @@ def color_identify(img, img_draw, target_color = 'blue'):
         right_y = (areaMax_contour[areaMax_contour[:,:,0].argmax()][0])[1]
         
         if pow(down_x - left_x, 2) + pow(down_y - left_y, 2) > pow(down_x - right_x, 2) + pow(down_y - right_y, 2):
-            left_x = int(Misc.map(left_x, 0, size[0], 0, img_w))
-            left_y = int(Misc.map(left_y, 0, size[1], 0, img_h))  
-            right_x = int(Misc.map(down_x, 0, size[0], 0, img_w))
-            right_y = int(Misc.map(down_y, 0, size[1], 0, img_h))
+            right_x = down_x
+            right_y = down_y
         else:
-            left_x = int(Misc.map(down_x, 0, size[0], 0, img_w))
-            left_y = int(Misc.map(down_y, 0, size[1], 0, img_h))
-            right_x = int(Misc.map(right_x, 0, size[0], 0, img_w))
-            right_y = int(Misc.map(right_y, 0, size[1], 0, img_h))
+            left_x = down_x
+            left_y = down_y
 
-        center_y = int(Misc.map((areaMax_contour[areaMax_contour[:,:,1].argmax()][0])[1], 0, size[1], 0, img_h))
+        center_y = down_y
         angle = int(math.degrees(math.atan2(right_y - left_y, right_x - left_x)))
         
         cv2.line(img_draw, (left_x, left_y), (right_x, right_y), (255, 0, 0), 2)
@@ -164,67 +164,112 @@ def color_identify(img, img_draw, target_color = 'blue'):
     return left_x, right_x, center_y, angle      
 
 
+# 执行最终爬阶/下台阶动作序列，一旦调用不再依赖视觉(execute the final climb/descend action sequence; once called it no longer relies on vision)
+def do_climb():
+    global strp_up, object_center_y, stair_state
+
+    print('STATE: COMMITTED_TO_CLIMB')
+    stair_state = 'COMMITTED_TO_CLIMB'
+    time.sleep(0.8)
+
+    print('STATE: CLIMBING')
+    stair_state = 'CLIMBING'
+    board.set_buzzer(1900, 0.1, 0.9, 1)
+    for i in range(2):
+        AGC.runActionGroup(go_forward_one_small_step) #前进一小步(take a small step forward)
+        time.sleep(0.5)
+
+    if strp_up: # 上台阶(go up stair)
+        AGC.runActionGroup('climb_stairs')
+        strp_up = False
+    else:       # 下台阶(go down stair)
+        for i in range(2):
+            AGC.runActionGroup(go_forward_one_small_step) #前进一步(take a small step forward)
+        time.sleep(0.5)
+        AGC.runActionGroup('down_floor')
+        strp_up = True
+    time.sleep(0.5)
+    object_center_y = -1
+
+    print('STATE: DONE')
+    stair_state = 'SEARCHING'
+
+
 #机器人跟踪线程(robot tracking thread)
 def move():
     global strp_up
     global object_center_y
+    global stair_state
     
     centreX = 320 # 物体在机器人正前方中心点对应的像素坐标,由于安装误差，物体在画面中心并不对应物体就在机器人中心点(the pixel coordinates of the object corresponding to the center point directly in front of the robot may not align with the actual center of the object due to installation errors)
     
     while True:
         if robot_is_running:
-            if object_center_y >= 0:  #检测到台阶,进行位置微调(detected stair, perform positional fine-tuning)
+            if stair_state in ('COMMITTED_TO_CLIMB', 'CLIMBING'):
+                # 已锁定爬阶，不再理会视觉丢失(already committed to climb, ignore any loss of vision until it finishes)
+                time.sleep(0.01)
+            elif object_center_y >= 0:  #检测到台阶,进行位置微调(detected stair, perform positional fine-tuning)
                 object_x = object_left_x + (object_right_x - object_left_x)/2
                 
                 if object_center_y < 320 and abs(object_x - centreX) < 150:  #快速靠近(approach quickly)
+                    if stair_state != 'ALIGNING':
+                        print('STATE: ALIGNING')
+                        stair_state = 'ALIGNING'
                     AGC.runActionGroup(go_forward)
                     time.sleep(0.2)
                 
                 elif 20 <= object_angle < 90:  #角度调整(angle adjustment)
+                    if stair_state != 'ALIGNING':
+                        print('STATE: ALIGNING')
+                        stair_state = 'ALIGNING'
                     AGC.runActionGroup(go_turn_right)
                     time.sleep(0.2)           
                 elif -20 >= object_angle > -90:
+                    if stair_state != 'ALIGNING':
+                        print('STATE: ALIGNING')
+                        stair_state = 'ALIGNING'
                     AGC.runActionGroup(go_turn_left)
                     time.sleep(0.2)
                     
                 elif object_x - centreX > 15: #左右调整(adjust left and right)
+                    if stair_state != 'ALIGNING':
+                        print('STATE: ALIGNING')
+                        stair_state = 'ALIGNING'
                     AGC.runActionGroup(right_move)
                 elif object_x - centreX < -15:
+                    if stair_state != 'ALIGNING':
+                        print('STATE: ALIGNING')
+                        stair_state = 'ALIGNING'
                     AGC.runActionGroup(left_move)
                 
                 elif 3 < object_angle < 20:   #角度微调(adjust the angle slightly)
+                    if stair_state != 'ALIGNING':
+                        print('STATE: ALIGNING')
+                        stair_state = 'ALIGNING'
                     AGC.runActionGroup(turn_right)
                     time.sleep(0.2)           
                 elif -5 > object_angle > -20:
+                    if stair_state != 'ALIGNING':
+                        print('STATE: ALIGNING')
+                        stair_state = 'ALIGNING'
                     AGC.runActionGroup(turn_left)
                     time.sleep(0.2)
                     
-                elif 320 <= object_center_y < 450:   #在中心(in the center)
+                elif 320 <= object_center_y < 450:   #在中心，已对齐且距离已知，进入接近状态(centered, aligned with known distance -> approaching)
+                    if stair_state != 'APPROACHING':
+                        print('STATE: APPROACHING')
+                        stair_state = 'APPROACHING'
                     AGC.runActionGroup(go_forward_one_step)
                     time.sleep(0.2)
                     
-                elif object_center_y >= 450: #位置靠近，可以跨栏或者上下台阶(approaching position, ready to hurdle or ascend/descend stairs)
-                    time.sleep(0.8)
-                    if object_center_y >= 450:
-                        board.set_buzzer(1900, 0.1, 0.9, 1) 
-                        for i in range(2):
-                            AGC.runActionGroup(go_forward_one_small_step) #前进一小步(take a small step forward)
-                            time.sleep(0.5)
-                    
-                        if strp_up: # 上台阶(go up stair)
-                            AGC.runActionGroup('climb_stairs')
-                            strp_up = False
-                        else:       # 下台阶(go down stair)
-                            for i in range(2):
-                                AGC.runActionGroup(go_forward_one_small_step) #前进一步(take a small step forward)
-                            time.sleep(0.5)
-                            AGC.runActionGroup('down_floor')
-                            strp_up = True
-                        time.sleep(0.5)
-                        object_center_y = -1
+                elif object_center_y >= 450: #位置靠近，仍能看见台阶，直接锁定爬阶(close enough and still visible, commit to climb)
+                    do_climb()
                     
                 else:
                     time.sleep(0.01)
+            elif stair_state == 'APPROACHING':
+                # 已对齐并处于接近状态，此时台阶因胸部遮挡而消失，视为已到达可爬阶位置，直接锁定(already aligned and approaching; vision lost here is treated as chest occlusion at close range, so commit anyway)
+                do_climb()
             else:
                 time.sleep(0.01)
         else:
