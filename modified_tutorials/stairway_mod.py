@@ -129,25 +129,39 @@ def getAreaMaxContour(contours, area_min=10):
 size = (640, 480)
 # 色块定位视觉处理函数(color block positioning vision processing function)
 def color_identify(img, img_draw, target_color = 'blue'):
-    
-    img_w = img.shape[:2][1]
-    img_h = img.shape[:2][0]
-    img_resize = cv2.resize(img, (size[0], size[1]), interpolation = cv2.INTER_CUBIC)
-    GaussianBlur_img = cv2.GaussianBlur(img_resize, (3, 3), 3)#高斯模糊(Gaussian blur)
-    frame_lab = cv2.cvtColor(GaussianBlur_img, cv2.COLOR_BGR2LAB) #将图像转换到LAB空间(convert the image to LAB space)
-    frame_mask = cv2.inRange(frame_lab,
-                                 (lab_data[target_color]['min'][0],
-                                  lab_data[target_color]['min'][1],
-                                  lab_data[target_color]['min'][2]),
-                                 (lab_data[target_color]['max'][0],
-                                  lab_data[target_color]['max'][1],
-                                  lab_data[target_color]['max'][2]))  #对原图像和掩模进行位运算(operate bitwise operation to original image and mask)
-    opened = cv2.morphologyEx(frame_mask, cv2.MORPH_OPEN, np.ones((3,3),np.uint8))#开运算(opening operation)
-    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, np.ones((3,3),np.uint8))#闭运算(closing operation)
-    contours = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[-2] #找出所有外轮廓(find out all the bounding contours)
-    areaMax_contour = getAreaMaxContour(contours, area_min=50)[0] #找到最大的轮廓(find out the contour with the maximal area)
 
     left_x, right_x, center_y, angle = -1, -1, -1, 0
+
+    # 图像/相机偶尔会给出无效帧(尺寸为0、None等),这类异常此前会直接抛出并
+    # 中断调用方(视觉线程)的循环,导致机器人卡死在最后一次成功检测的数值上
+    # (occasionally the camera/image pipeline hands us an invalid frame -
+    # zero-size, None, etc. Previously this raised straight out of here and
+    # killed the caller's (vision thread's) loop, freezing the robot on the
+    # last successfully detected values)
+    try:
+        img_w = img.shape[:2][1]
+        img_h = img.shape[:2][0]
+        if img is None or img_w <= 0 or img_h <= 0:
+            return left_x, right_x, center_y, angle
+
+        img_resize = cv2.resize(img, (size[0], size[1]), interpolation = cv2.INTER_CUBIC)
+        GaussianBlur_img = cv2.GaussianBlur(img_resize, (3, 3), 3)#高斯模糊(Gaussian blur)
+        frame_lab = cv2.cvtColor(GaussianBlur_img, cv2.COLOR_BGR2LAB) #将图像转换到LAB空间(convert the image to LAB space)
+        frame_mask = cv2.inRange(frame_lab,
+                                     (lab_data[target_color]['min'][0],
+                                      lab_data[target_color]['min'][1],
+                                      lab_data[target_color]['min'][2]),
+                                     (lab_data[target_color]['max'][0],
+                                      lab_data[target_color]['max'][1],
+                                      lab_data[target_color]['max'][2]))  #对原图像和掩模进行位运算(operate bitwise operation to original image and mask)
+        opened = cv2.morphologyEx(frame_mask, cv2.MORPH_OPEN, np.ones((3,3),np.uint8))#开运算(opening operation)
+        closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, np.ones((3,3),np.uint8))#闭运算(closing operation)
+        contours = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[-2] #找出所有外轮廓(find out all the bounding contours)
+        areaMax_contour = getAreaMaxContour(contours, area_min=50)[0] #找到最大的轮廓(find out the contour with the maximal area)
+    except Exception as e:
+        print('color_identify error:', e)
+        return -1, -1, -1, 0
+
     if areaMax_contour is not None:
         
         down_x = (areaMax_contour[areaMax_contour[:,:,1].argmax()][0])[0]
