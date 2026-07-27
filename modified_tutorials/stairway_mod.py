@@ -68,6 +68,12 @@ GOOD_DETECTION_REQUIRED = 3      # 需要连续多少帧良好检测才允许锁
 GOOD_WIDTH_MIN = 60              # 轮廓宽度(right_x-left_x),太窄说明台阶被遮挡/太远(min contour width; too narrow = occluded/too far)
 GOOD_ANGLE_MAX = 10              # 角度绝对值上限,遮挡时角度会突然跳到10+度(max |angle|; occlusion makes angle jump to 10+)
 GOOD_LEFT_X_MIN = 20             # 轮廓左边界离画面左边缘太近，说明轮廓被裁切(遮挡的特征)(contour clipped against the left frame edge = occlusion artifact)
+CLOSE_COMMIT_Y = 400             # center_y达到此值即视为已非常接近(与450接近但留有余量),此时若轮廓因遮挡/透视而不再是"良好检测",
+                                  # 不再尝试用角度/左右分支修正(那只会来回摆动),直接锁定爬阶
+                                  # (once center_y reaches this value the robot is already very close (just
+                                  # below the 450 "still visible" cutoff, with some margin); if the contour is
+                                  # no longer a "good detection" at that point (occlusion/perspective distortion),
+                                  # stop trying to correct angle/x - it will only oscillate - and commit instead)
 
 # 变量重置(variable reset)
 def reset():
@@ -271,6 +277,18 @@ def move():
                     # (several consecutive stable, wide, well-angled detections -> close and
                     # aligned enough; ignore this frame's angle/x-offset - which may be
                     # distorted by occlusion - and commit to the climb sequence)
+                    do_climb()
+                    continue
+
+                if not good_detection and object_center_y >= CLOSE_COMMIT_Y:
+                    # 已经非常靠近(center_y很高),但轮廓因透视/遮挡而变窄、角度失真,
+                    # 属于与"APPROACHING阶段视觉丢失"同类的问题:继续按角度/左右分支修正只会
+                    # 在原地来回摆动而永远无法收敛(因为几何失真不是真的偏移)，因此直接锁定爬阶
+                    # (already very close (high center_y), but the contour is narrowed/angle-distorted
+                    # by perspective/occlusion - same class of problem as losing vision while
+                    # APPROACHING. Continuing to run angle/x correction branches would just make the
+                    # robot oscillate in place forever since the distortion isn't a real offset, so
+                    # commit to the climb sequence directly)
                     do_climb()
                     continue
 
