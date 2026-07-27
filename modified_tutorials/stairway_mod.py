@@ -214,6 +214,16 @@ def do_climb():
         AGC.runActionGroup('down_floor')
         strp_up = True
     time.sleep(0.5)
+
+    # climb_stairs/down_floor 等动作组会驱动包括云台舵机1(俯仰)在内的全部舵机，
+    # 动作组结束后舵机1并不会自动回到初始角度(926)，而是停在动作组最后一帧的角度，
+    # 这通常明显低于926，导致摄像头朝向过低/过高，看不到下一条红线
+    # (action groups such as climb_stairs/down_floor drive every servo, including the
+    # pan-tilt servo1. They do not restore it afterwards - it's simply left wherever the
+    # action group's last frame put it, typically well below 926 - so the camera ends up
+    # tilted at the wrong angle and can no longer see the next red line for the next stair)
+    initMove()
+    time.sleep(0.2)
     object_center_y = -1
 
     print('STATE: DONE')
