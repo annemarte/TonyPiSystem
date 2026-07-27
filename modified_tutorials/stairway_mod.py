@@ -75,15 +75,31 @@ CLOSE_COMMIT_Y = 400             # center_y达到此值即视为已非常接近(
                                   # no longer a "good detection" at that point (occlusion/perspective distortion),
                                   # stop trying to correct angle/x - it will only oscillate - and commit instead)
 
+# 连续多帧完全没有检测到台阶(object_center_y<0)时的计数,用于避免在SEARCHING/ALIGNING
+# 状态下永久卡死(例如刚爬完一节台阶后,下一条红线因摄像头角度/距离而暂时不在视野内)
+# (consecutive no-detection frame counter while SEARCHING/ALIGNING - prevents getting
+# stuck forever, e.g. right after finishing a climb the next red line may momentarily
+# be outside the camera's view because of the head angle/distance)
+no_detection_count = 0
+NO_DETECTION_TIMEOUT = 30        # 连续多少帧看不到台阶后尝试主动重新搜索(frames with no detection before trying to actively re-search)
+SEARCH_TILT_STEP = 40            # 每次重新搜索时舵机1的俯仰调整量(pan-tilt servo1 pulse adjustment per re-search attempt)
+SEARCH_TILT_MIN = 700            # 舵机1俯仰调整的下限,避免转出机械限位(lower bound for servo1 tilt, to avoid exceeding mechanical limits)
+SEARCH_TILT_MAX = 1100           # 舵机1俯仰调整的上限(upper bound for servo1 tilt)
+search_tilt = 926                # 当前搜索时使用的舵机1角度,从初始值926开始(current servo1 tilt used while searching, starts at the initial 926)
+
 # 变量重置(variable reset)
 def reset():
     global object_left_x, object_right_x
     global object_center_y, object_angle,strp_up
     global stair_state, good_detection_count
     
+    global no_detection_count, search_tilt
+
     strp_up = True
     stair_state = 'SEARCHING'
     good_detection_count = 0
+    no_detection_count = 0
+    search_tilt = 926
     object_left_x, object_right_x, object_center_y, object_angle = -2, -2, -2, 0
     
 
@@ -242,6 +258,7 @@ def move():
     global object_center_y
     global stair_state
     global good_detection_count
+    global no_detection_count, search_tilt
     
     centreX = 320 # 物体在机器人正前方中心点对应的像素坐标,由于安装误差，物体在画面中心并不对应物体就在机器人中心点(the pixel coordinates of the object corresponding to the center point directly in front of the robot may not align with the actual center of the object due to installation errors)
     
@@ -251,6 +268,7 @@ def move():
                 # 已锁定爬阶，不再理会视觉丢失(already committed to climb, ignore any loss of vision until it finishes)
                 time.sleep(0.01)
             elif object_center_y >= 0:  #检测到台阶,进行位置微调(detected stair, perform positional fine-tuning)
+                no_detection_count = 0
                 object_x = object_left_x + (object_right_x - object_left_x)/2
                 object_width = object_right_x - object_left_x
 
@@ -352,7 +370,26 @@ def move():
                 # 已对齐并处于接近状态，此时台阶因胸部遮挡而消失，视为已到达可爬阶位置，直接锁定(already aligned and approaching; vision lost here is treated as chest occlusion at close range, so commit anyway)
                 do_climb()
             else:
-                time.sleep(0.01)
+                # SEARCHING/ALIGNING状态下完全没有检测到台阶(例如刚爬完一节后,下一条红线
+                # 因摄像头俯仰角度/距离而暂时不在视野内),连续多帧都看不到时不能永远卡死,
+                # 主动小幅调整摄像头俯仰角并小步前进,尝试重新找到台阶
+                # (SEARCHING/ALIGNING with no detection at all - e.g. right after finishing a
+                # climb, the next red line may momentarily be outside the camera's view because
+                # of the head tilt/distance. Rather than freezing forever, actively nudge the
+                # head tilt and take a small step to try to re-acquire the stair)
+                no_detection_count += 1
+                if no_detection_count >= NO_DETECTION_TIMEOUT:
+                    no_detection_count = 0
+                    search_tilt += SEARCH_TILT_STEP
+                    if search_tilt > SEARCH_TILT_MAX or search_tilt < SEARCH_TILT_MIN:
+                        search_tilt = 926
+                    print('STAIR: re-search, tilt=', search_tilt)
+                    ctl.set_pwm_servo_pulse(1, search_tilt, 300)
+                    time.sleep(0.3)
+                    AGC.runActionGroup(go_forward_one_small_step)
+                    time.sleep(0.5)
+                else:
+                    time.sleep(0.01)
         else:
             time.sleep(0.01)
                 
