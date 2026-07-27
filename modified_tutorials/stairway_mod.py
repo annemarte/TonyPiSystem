@@ -398,7 +398,7 @@ def run(img):
     
     # go up and down stair
     object_left_x, object_right_x, object_center_y, object_angle = color_identify(img_copy.copy(), img_copy, target_color = 'red')
-    print('stairway',object_left_x, object_right_x, object_center_y, object_angle)# print position and angle parameters
+    # print('stairway',object_left_x, object_right_x, object_center_y, object_angle)# print position and angle parameters
             
         
     return img_copy
