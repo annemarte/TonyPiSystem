@@ -73,6 +73,12 @@ CLOSE_COMMIT_Y = 400             # once center_y reaches this value the robot is
                                   # no longer a "good detection" at that point (occlusion/perspective distortion),
                                   # stop trying to correct angle/x - it will only oscillate - and commit instead
 
+# tracks whether we have recently seen the stair close enough to be about to commit -
+# lets us recover if vision is lost right at that point (e.g. the robot ends up
+# standing right on top of the final line and it disappears under/too close to the
+# camera), instead of only recovering when stair_state already reached 'APPROACHING'
+near_commit = False
+
 # consecutive no-detection frame counter while SEARCHING/ALIGNING - prevents getting
 # stuck forever, e.g. right after finishing a climb the next red line may momentarily
 # be outside the camera's view because of the head angle/distance
@@ -88,12 +94,13 @@ def reset():
     global object_left_x, object_right_x
     global object_center_y, object_angle,strp_up
     global stair_state, good_detection_count
-    
+    global near_commit
     global no_detection_count, search_tilt
 
     strp_up = True
     stair_state = 'SEARCHING'
     good_detection_count = 0
+    near_commit = False
     no_detection_count = 0
     search_tilt = 926
     object_left_x, object_right_x, object_center_y, object_angle = -2, -2, -2, 0
@@ -206,11 +213,12 @@ def color_identify(img, img_draw, target_color = 'blue'):
 
 # execute the final climb/descend action sequence; once called it no longer relies on vision
 def do_climb():
-    global strp_up, object_center_y, stair_state, good_detection_count
+    global strp_up, object_center_y, stair_state, good_detection_count, near_commit
 
     print('STATE: COMMITTED_TO_CLIMB')
     stair_state = 'COMMITTED_TO_CLIMB'
     good_detection_count = 0
+    near_commit = False
     time.sleep(0.8)
 
     print('STATE: CLIMBING')
@@ -249,6 +257,7 @@ def move():
     global object_center_y
     global stair_state
     global good_detection_count
+    global near_commit
     global no_detection_count, search_tilt
     
     centreX = 320 # the pixel coordinates of the object corresponding to the center point directly in front of the robot may not align with the actual center of the object due to installation errors
@@ -273,6 +282,12 @@ def move():
                     good_detection_count += 1
                 else:
                     good_detection_count = 0
+
+                if object_center_y >= CLOSE_COMMIT_Y:
+                    # remember that we've recently been this close, so that if vision is
+                    # lost right afterwards (e.g. standing right on top of the line) we
+                    # can still commit instead of falling back to a blind re-search
+                    near_commit = True
 
                 print("STAIR:", "state=", stair_state, "width=", object_width,
                       "center_y=", object_center_y, "angle=", object_angle,
@@ -368,11 +383,19 @@ def move():
             elif stair_state == 'APPROACHING':
                 # already aligned and approaching; vision lost here is treated as chest occlusion at close range, so commit anyway
                 do_climb()
+            elif stair_state == 'ALIGNING' and near_commit:
+                # was still ALIGNING (never formally reached APPROACHING - e.g. it got this
+                # close via the fast good-detection/CLOSE_COMMIT_Y shortcuts, which don't
+                # change stair_state) but we did recently see the stair very close before
+                # losing it - e.g. the robot ends up standing right on the final line and it
+                # disappears from view. Commit instead of endlessly re-searching.
+                do_climb()
             else:
-                # SEARCHING/ALIGNING with no detection at all - e.g. right after finishing a
-                # climb, the next red line may momentarily be outside the camera's view because
-                # of the head tilt/distance. Rather than freezing forever, actively nudge the
-                # head tilt and take a small step to try to re-acquire the stair
+                # SEARCHING/ALIGNING with no detection at all and not near_commit - e.g. right
+                # after finishing a climb, the next red line may momentarily be outside the
+                # camera's view because of the head tilt/distance. Rather than freezing
+                # forever, actively nudge the head tilt and take a small step to try to
+                # re-acquire the stair
                 no_detection_count += 1
                 if no_detection_count >= NO_DETECTION_TIMEOUT:
                     no_detection_count = 0
