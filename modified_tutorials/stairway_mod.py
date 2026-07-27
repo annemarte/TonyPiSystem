@@ -176,10 +176,11 @@ def color_identify(img, img_draw, target_color = 'blue'):
 
 # 执行最终爬阶/下台阶动作序列，一旦调用不再依赖视觉(execute the final climb/descend action sequence; once called it no longer relies on vision)
 def do_climb():
-    global strp_up, object_center_y, stair_state
+    global strp_up, object_center_y, stair_state, good_detection_count
 
     print('STATE: COMMITTED_TO_CLIMB')
     stair_state = 'COMMITTED_TO_CLIMB'
+    good_detection_count = 0
     time.sleep(0.8)
 
     print('STATE: CLIMBING')
@@ -247,7 +248,6 @@ def move():
                     # aligned enough; ignore this frame's angle/x-offset - which may be
                     # distorted by occlusion - and commit to the climb sequence)
                     do_climb()
-                    good_detection_count = 0
                     continue
 
                 if object_center_y < 320 and abs(object_x - centreX) < 150:  #快速靠近(approach quickly)
