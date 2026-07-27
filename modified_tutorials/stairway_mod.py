@@ -285,7 +285,8 @@ def move():
                     do_climb()
                     continue
 
-                if not good_detection and object_center_y >= CLOSE_COMMIT_Y and abs(object_x - centreX) < 150:
+                if (not good_detection and object_center_y >= CLOSE_COMMIT_Y
+                        and abs(object_x - centreX) < 150 and stair_state != 'SEARCHING'):
                     # already very close (high center_y) AND roughly centered left/right, but the
                     # contour is narrowed/angle-distorted by perspective/occlusion - same class of
                     # problem as losing vision while APPROACHING. Continuing to run angle/x correction
@@ -297,6 +298,14 @@ def move():
                     # the top step) while still being badly off-center - committing immediately in that
                     # case skips lateral alignment entirely and the robot fails to actually line up with
                     # the down-stair before triggering down_floor.
+                    # The stair_state != 'SEARCHING' guard is required too: right after do_climb()
+                    # resets to SEARCHING, the very first detected frame of the *next* stair can
+                    # already report a high center_y (perspective from the top step) while ALSO
+                    # happening to be roughly x-centered, even though its angle is genuinely off
+                    # (e.g. angle=14, a real turn is needed, not occlusion noise). Requiring at least
+                    # one prior pass through the normal ALIGNING/APPROACHING branches for this stair
+                    # ensures a real angle offset gets corrected (via the 3<angle<20 / -20<angle<-5
+                    # branches) before this shortcut is allowed to bypass it and commit too early.
                     do_climb()
                     continue
 
