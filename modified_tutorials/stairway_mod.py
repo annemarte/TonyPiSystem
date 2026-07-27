@@ -53,21 +53,31 @@ ctl = Controller(board)
 
 # 初始位置(initial position)
 def initMove():
-    ctl.set_pwm_servo_pulse(1,servo_data['servo1'],500)
+    ctl.set_pwm_servo_pulse(1,926,500)
     ctl.set_pwm_servo_pulse(2,servo_data['servo2'],500)   
 
 object_left_x, object_right_x, object_center_y, object_angle = -2, -2, -2, 0
 strp_up = True
 # 阶梯识别/对齐/接近/锁定爬阶的小状态机(small state latch for detect/align/approach/commit-to-climb)
 stair_state = 'SEARCHING'
+
+# 连续“良好检测”计数,用于抵御胸部遮挡造成的噪声帧(consecutive good-detection counter, used to filter out
+# noisy frames caused by the chest occluding the stair at close range)
+good_detection_count = 0
+GOOD_DETECTION_REQUIRED = 3      # 需要连续多少帧良好检测才允许锁定爬阶(consecutive good frames required to commit)
+GOOD_WIDTH_MIN = 60              # 轮廓宽度(right_x-left_x),太窄说明台阶被遮挡/太远(min contour width; too narrow = occluded/too far)
+GOOD_ANGLE_MAX = 10              # 角度绝对值上限,遮挡时角度会突然跳到10+度(max |angle|; occlusion makes angle jump to 10+)
+GOOD_LEFT_X_MIN = 20             # 轮廓左边界离画面左边缘太近，说明轮廓被裁切(遮挡的特征)(contour clipped against the left frame edge = occlusion artifact)
+
 # 变量重置(variable reset)
 def reset():
     global object_left_x, object_right_x
     global object_center_y, object_angle,strp_up
-    global stair_state
+    global stair_state, good_detection_count
     
     strp_up = True
     stair_state = 'SEARCHING'
+    good_detection_count = 0
     object_left_x, object_right_x, object_center_y, object_angle = -2, -2, -2, 0
     
 
@@ -200,6 +210,7 @@ def move():
     global strp_up
     global object_center_y
     global stair_state
+    global good_detection_count
     
     centreX = 320 # 物体在机器人正前方中心点对应的像素坐标,由于安装误差，物体在画面中心并不对应物体就在机器人中心点(the pixel coordinates of the object corresponding to the center point directly in front of the robot may not align with the actual center of the object due to installation errors)
     
@@ -210,7 +221,35 @@ def move():
                 time.sleep(0.01)
             elif object_center_y >= 0:  #检测到台阶,进行位置微调(detected stair, perform positional fine-tuning)
                 object_x = object_left_x + (object_right_x - object_left_x)/2
-                
+                object_width = object_right_x - object_left_x
+
+                # “良好检测”过滤:宽度足够、角度合理、轮廓未被画面左边缘裁切,
+                # 用来区分真实台阶轮廓和胸部遮挡产生的噪声帧
+                # (good-detection filter: sufficient width, reasonable angle, contour not
+                # clipped against the left frame edge - distinguishes a real stair contour
+                # from a noisy frame caused by chest occlusion)
+                good_detection = (object_width >= GOOD_WIDTH_MIN and
+                                   abs(object_angle) <= GOOD_ANGLE_MAX and
+                                   object_left_x >= GOOD_LEFT_X_MIN)
+                if good_detection:
+                    good_detection_count += 1
+                else:
+                    good_detection_count = 0
+
+                print("STAIR:", "state=", stair_state, "width=", object_width,
+                      "center_y=", object_center_y, "angle=", object_angle,
+                      "good=", good_detection, "good_count=", good_detection_count)
+
+                if good_detection_count >= GOOD_DETECTION_REQUIRED:
+                    # 已连续多帧看到稳定、宽阔、角度良好的台阶轮廓,判定已足够接近且对齐,
+                    # 不再理会本帧(可能因遮挡而失真)的角度/左右偏移，直接锁定爬阶
+                    # (several consecutive stable, wide, well-angled detections -> close and
+                    # aligned enough; ignore this frame's angle/x-offset - which may be
+                    # distorted by occlusion - and commit to the climb sequence)
+                    do_climb()
+                    good_detection_count = 0
+                    continue
+
                 if object_center_y < 320 and abs(object_x - centreX) < 150:  #快速靠近(approach quickly)
                     if stair_state != 'ALIGNING':
                         print('STATE: ALIGNING')
